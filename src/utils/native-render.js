@@ -9,8 +9,12 @@ const combinedTypes = new Set(['attack', 'damage', 'healing', 'generic']);
 const sectionOrder = { attack: 0, damage: 1, healing: 1, generic: 2 };
 const refreshing = new Set();
 const renders = new WeakMap();
+// Fold-ins RSR built itself. Message content may carry the same class and data
+// attributes, so only these nodes may hide another card.
+const nativeSources = new WeakSet();
 /** Longest a folded card waits for Dice So Nice before revealing its results anyway. */
 const DICE_REVEAL_TIMEOUT_MS = 10000;
+const RECONCILE_FALLBACK_MS = 100;
 
 /** Every match in the main document and in any detached Foundry window. */
 function queryAll(selector) {
@@ -285,7 +289,7 @@ export async function renderNativeMessage(message, suppliedHtml) {
         if (!section) continue;
         // The section's data-message-id identifies the real child document, so
         // native components and RSR controls inside it resolve that message.
-        section.classList.add('rsr-native-source');
+        markNativeSource(section);
         combined.append(section);
     }
     // The legacy 5.3 breakdown toggles on click, as dnd5e's own roll cards did.
@@ -382,13 +386,19 @@ function toggleBreakdown(event) {
     event.target.closest('.dice-roll')?.classList.toggle('expanded');
 }
 
+/** Registers a fold-in section RSR rendered, so it may represent (hide) its original. */
+export function markNativeSource(section) {
+    section.classList.add('rsr-native-source');
+    nativeSources.add(section);
+}
+
 /** Hide originals that a fold-in represents; restore them when it disappears. */
 export function reconcileNativeSources() {
     // Collect the represented ids once: re-querying the whole document for every
     // message made each pass O(messages x DOM nodes). Query results are always connected.
     const represented = new Set();
     for (const node of queryAll('.rsr-native-source[data-rsr-message-id]')) {
-        represented.add(node.dataset.rsrMessageId);
+        if (nativeSources.has(node)) represented.add(node.dataset.rsrMessageId);
     }
     for (const root of queryAll('.message[data-message-id]')) {
         if (root.classList.contains('rsr-native-source')) continue;
@@ -408,17 +418,57 @@ export function reconcileNativeSources() {
     }
 }
 
-let reconcileQueued = false;
+const sourceObservers = new WeakMap();
+const sourceSelector = '.message[data-message-id], .rsr-native-source[data-rsr-message-id]';
 
-/** Coalesced: every render in a frame (sidebar, popout, notification copies) shares one pass. */
-export function scheduleReconcile() {
-    if (reconcileQueued) return;
-    reconcileQueued = true;
-    const run = () => {
-        reconcileQueued = false;
-        reconcileNativeSources();
+/**
+ * Render hooks run before ChatLog inserts its cards, and deletion hooks run before
+ * its removal animation finishes. Observe those DOM changes, including pruning and
+ * notification expiry, instead of guessing when a render or removal has completed.
+ * Each document needs its own observer: Foundry can adopt cards into a detached window.
+ * Returns a cleanup function for the detached window's close hook.
+ */
+export function observeNativeSources(doc = document) {
+    if (sourceObservers.has(doc)) return sourceObservers.get(doc);
+    const observer = new MutationObserver(records => {
+        const touchesSources = records.some(record => {
+            // Our content clearing must not trigger a hide/restore loop, even when
+            // author HTML contains copied source markers. Removing the whole card
+            // still counts: that record targets its parent log, not its content.
+            if (record.target.closest?.('.rsr-native-combined-original')) return false;
+            return [...record.addedNodes, ...record.removedNodes].some(node =>
+                node.nodeType === 1 && (node.matches(sourceSelector) || node.querySelector(sourceSelector)));
+        });
+        // Text and attribute changes do not change which original cards are represented.
+        if (touchesSources) scheduleReconcile();
+    });
+    observer.observe(doc, { childList: true, subtree: true });
+    const disconnect = () => {
+        observer.disconnect();
+        sourceObservers.delete(doc);
     };
-    // Background tabs pause animation frames; a hidden client must still hide originals.
-    if (typeof requestAnimationFrame === 'function' && document.visibilityState !== 'hidden') requestAnimationFrame(run);
-    else setTimeout(run, 0);
+    sourceObservers.set(doc, disconnect);
+    return disconnect;
+}
+
+let reconcileFrame = null;
+let reconcileTimer = null;
+
+/**
+ * Coalesce requests until the next frame, with a bounded fallback if frames stall.
+ * Later requests never postpone the timer. A late DOM insertion requests a new pass
+ * through the observer, so neither callback has to predict when a batch will arrive.
+ */
+export function scheduleReconcile() {
+    if (reconcileTimer !== null) return;
+    if (typeof requestAnimationFrame === 'function') reconcileFrame = requestAnimationFrame(runReconcile);
+    reconcileTimer = setTimeout(runReconcile, reconcileFrame === null ? 0 : RECONCILE_FALLBACK_MS);
+}
+
+function runReconcile() {
+    if (reconcileFrame !== null) cancelAnimationFrame(reconcileFrame);
+    clearTimeout(reconcileTimer);
+    reconcileFrame = null;
+    reconcileTimer = null;
+    reconcileNativeSources();
 }

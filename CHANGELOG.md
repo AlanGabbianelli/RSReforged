@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **No more client freezes when the chat log re-renders many cards at once**, for example with Chatlog Prune or when loading a long log. RSReforged now hides the standalone roll cards folded into a usage card in one pass per frame, instead of a full pass for every rendered message (thanks [@MatteoZanella](https://github.com/MatteoZanella), [#45](https://github.com/arrowedisgaming/RSReforged/pull/45)).
+- Standalone roll cards are still hidden while the Foundry tab is in the background, including in a detached chat window that stays visible.
+- Standalone roll cards stay hidden when a long chat log loads in slowly, and come back as soon as their usage card is deleted, including in a detached chat window.
+- A chat message whose HTML copies an RSReforged roll section can no longer hide other chat cards.
+
 ## [6.0.1] — 2026-10-05
 
 ### Added

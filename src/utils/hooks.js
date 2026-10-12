@@ -10,7 +10,7 @@ import { SETTING_NAMES, SettingsUtility, HIDE_NPC_ROLL_MODES } from "./settings.
 
 import { usesNativeWorkflow, getOriginId } from "./dnd5e-compat.js";
 import { NATIVE_ACTIVITY_TYPES, quickRollCardFor, runNativeUsage, recordAmmunitionSnapshot, captureNativeMessageConfig } from "./native-workflow.js";
-import { renderNativeMessage, refreshNativeOrigin, scheduleReconcile } from "./native-render.js";
+import { renderNativeMessage, refreshNativeOrigin, scheduleReconcile, observeNativeSources } from "./native-render.js";
 import { claimNativeThrow, prepareAlternates } from "./native-dice.js";
 
 export const HOOKS_CORE = { INIT: "init", READY: "ready" }
@@ -268,6 +268,21 @@ export class HooksUtility {
     static registerChatHooks() {
         LogUtility.log("Registering chat hooks");
 
+        const detachedObservers = new Map();
+        Hooks.on("openDetachedWindow", (id, win) => {
+            if (usesNativeWorkflow()) detachedObservers.set(id, observeNativeSources(win.document));
+        });
+        Hooks.on("closeDetachedWindow", id => {
+            detachedObservers.get(id)?.();
+            detachedObservers.delete(id);
+            if (usesNativeWorkflow()) scheduleReconcile();
+        });
+        Hooks.on("renderChatLog", (app, html) => {
+            if (!usesNativeWorkflow()) return;
+            observeNativeSources(html?.ownerDocument ?? html?.[0]?.ownerDocument ?? document);
+            scheduleReconcile();
+        });
+
         Hooks.on("preCreateChatMessage", (message, data, options, userId) => {
             if (userId !== game.user.id) return;
             // dnd5e 6: native typed messages are created as dnd5e prepared them; the
@@ -376,6 +391,7 @@ export class HooksUtility {
         // happen here, after system.getHTML() has finished rewriting the DOM.
         Hooks.on(HOOKS_DND5E.RENDER_CHAT_MESSAGE, (message, html) => {
             if (usesNativeWorkflow() && !isLegacyCard(message)) {
+                observeNativeSources(html?.ownerDocument ?? html?.[0]?.ownerDocument ?? document);
                 renderNativeMessage(message, html).catch(error => LogUtility.logError(`Native card rendering failed: ${error.message}`));
                 return;
             }

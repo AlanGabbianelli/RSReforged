@@ -197,6 +197,18 @@ it("reveals the combined block even if Dice So Nice never reports the throw comp
     }
 });
 
+it("lets the fold-ins renderNativeMessage builds hide their originals", async () => {
+    const attack = nativeChild("attack", "attack", "<button>Roll</button>");
+    game.messages.set("attack", attack.message);
+    const html = usageHtml();
+    await renderer.renderNativeMessage(usageParent([attack.message]), html);
+    document.body.append(html, attack.node);
+
+    // No manual registration: the sections come from the production render path.
+    renderer.reconcileNativeSources();
+    expect(attack.node.classList.contains("rsr-native-combined-original")).toBe(true);
+});
+
 it("hides an original child card only while a fold-in represents it", () => {
     const original = document.createElement("li");
     original.className = "message";
@@ -204,9 +216,10 @@ it("hides an original child card only while a fold-in represents it", () => {
     original.innerHTML = '<div class="message-content"><button class="dice-roll"></button></div>';
     document.body.append(original);
     const folded = document.createElement("li");
-    folded.className = "message rsr-native-source";
+    folded.className = "message";
     folded.dataset.messageId = "attack";
     folded.dataset.rsrMessageId = "attack";
+    renderer.markNativeSource(folded);
     document.body.append(folded);
     ui.chat.updateMessage = vi.fn();
     game.messages.set("attack", { id: "attack" });
@@ -760,20 +773,161 @@ it("never builds a selector from a button's data, so odd values can't break the 
     }
 });
 
-it("coalesces reconcile requests made in the same frame into one pass", async () => {
-    vi.useFakeTimers({ toFake: ["setTimeout", "requestAnimationFrame"] });
+it("coalesces reconcile requests on the timer path into one pass", () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+        const spy = vi.spyOn(document, "querySelectorAll");
+        const passes = () => spy.mock.calls.filter(([selector]) => selector === ".message[data-message-id]").length;
+        for (let i = 0; i < 10; i++) renderer.scheduleReconcile();
+        vi.runAllTimers();
+        expect(passes()).toBe(1);
+        // A lone later request runs once.
+        renderer.scheduleReconcile();
+        vi.runAllTimers();
+        expect(passes()).toBe(2);
+    } finally {
+        vi.useRealTimers();
+        vi.restoreAllMocks();
+    }
+});
+
+// Animation frames per the HTML spec: a flush runs the callbacks queued before it, skipping
+// any cancelled meanwhile; callbacks queued during the flush wait for the next one.
+function stubFrames() {
+    const frames = new Map();
+    let next = 1;
+    vi.stubGlobal("requestAnimationFrame", vi.fn(callback => {
+        frames.set(next, callback);
+        return next++;
+    }));
+    vi.stubGlobal("cancelAnimationFrame", vi.fn(id => frames.delete(id)));
+    return {
+        frames,
+        flush() {
+            for (const id of [...frames.keys()]) {
+                const callback = frames.get(id);
+                if (!callback) continue;
+                frames.delete(id);
+                callback(0);
+            }
+        }
+    };
+}
+
+// The JSDOM document is shared across tests: restore it after each one.
+function restoreDocument() {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+}
+
+function reconcilePasses(spy) {
+    return spy.mock.calls.filter(([selector]) => selector === ".message[data-message-id]").length;
+}
+
+function representedPair(id = "attack") {
+    const original = document.createElement("li");
+    original.className = "message";
+    original.dataset.messageId = id;
+    original.innerHTML = '<div class="message-content"><button class="dice-roll"></button></div>';
+    const folded = document.createElement("li");
+    folded.className = "message";
+    folded.dataset.messageId = id;
+    folded.dataset.rsrMessageId = id;
+    renderer.markNativeSource(folded);
+    game.messages.set(id, { id });
+    return { original, folded };
+}
+
+it("coalesces reconcile requests made before a frame into one pass", () => {
+    const { frames, flush } = stubFrames();
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     try {
         const spy = vi.spyOn(document, "querySelectorAll");
         for (let i = 0; i < 10; i++) renderer.scheduleReconcile();
-        await vi.runAllTimersAsync();
-        const passes = spy.mock.calls.filter(([selector]) => selector === ".message[data-message-id]").length;
-        expect(passes).toBe(1);
-        // A later request still runs.
+        expect(frames.size).toBe(1);
+        expect(vi.getTimerCount()).toBe(1);
+        flush();
+        expect(reconcilePasses(spy)).toBe(1);
+        // The frame ran, so its fallback timer is gone.
+        expect(vi.getTimerCount()).toBe(0);
+        // A request made after the pass queues a new one.
         renderer.scheduleReconcile();
-        await vi.runAllTimersAsync();
-        expect(spy.mock.calls.filter(([selector]) => selector === ".message[data-message-id]").length).toBe(2);
-        spy.mockRestore();
+        flush();
+        expect(reconcilePasses(spy)).toBe(2);
     } finally {
-        vi.useRealTimers();
+        restoreDocument();
+    }
+});
+
+it("still reconciles when frames stall, as in a hidden tab with a detached chat window in view", () => {
+    const { frames, flush } = stubFrames();
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+        const { original, folded } = representedPair();
+        document.body.append(original);
+        const spy = vi.spyOn(document, "querySelectorAll");
+
+        // Queued as a frame that never runs (the tab hid, or the window is throttled).
+        renderer.scheduleReconcile();
+        // A fold-in renders later, with no visibility change in between.
+        document.body.append(folded);
+        renderer.scheduleReconcile();
+
+        vi.advanceTimersByTime(100);
+        expect(reconcilePasses(spy)).toBe(1);
+        expect(original.classList.contains("rsr-native-combined-original")).toBe(true);
+        // The fallback cancels its frame: resuming frames must not repeat the work.
+        vi.advanceTimersByTime(100);
+        expect(reconcilePasses(spy)).toBe(1);
+        expect(frames.size).toBe(0);
+        flush();
+        vi.runAllTimers();
+        expect(reconcilePasses(spy)).toBe(1);
+    } finally {
+        restoreDocument();
+    }
+});
+
+it("keeps reconciling while requests keep arriving and frames stall", () => {
+    stubFrames();
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+        const { original, folded } = representedPair();
+        document.body.append(original, folded);
+        const spy = vi.spyOn(document, "querySelectorAll");
+
+        // A request every 50 ms for a second: none may push the fallback back.
+        for (let elapsed = 0; elapsed < 1000; elapsed += 50) {
+            renderer.scheduleReconcile();
+            vi.advanceTimersByTime(50);
+            if (elapsed === 100) expect(original.classList.contains("rsr-native-combined-original")).toBe(true);
+        }
+        expect(reconcilePasses(spy)).toBeGreaterThanOrEqual(9);
+    } finally {
+        restoreDocument();
+    }
+});
+
+it("preserves a request triggered by restoring an original during reconciliation", () => {
+    const { frames, flush } = stubFrames();
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+        const { original } = representedPair();
+        original.classList.add("rsr-native-combined-original");
+        document.body.append(original);
+        // Restoring a card can cause a new render before the current pass returns.
+        ui.chat.updateMessage = vi.fn(() => renderer.scheduleReconcile());
+        const spy = vi.spyOn(document, "querySelectorAll");
+        renderer.scheduleReconcile();
+        flush();
+        expect(original.classList.contains("rsr-native-combined-original")).toBe(false);
+        expect(frames.size).toBe(1);
+        flush();
+        expect(reconcilePasses(spy)).toBe(2);
+        expect(frames.size).toBe(0);
+        expect(vi.getTimerCount()).toBe(0);
+    } finally {
+        restoreDocument();
     }
 });
