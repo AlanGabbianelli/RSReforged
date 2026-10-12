@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [6.0.2] — 2026-10-12
+
 ### Fixed
 
 - **No more client freezes when the chat log re-renders many cards at once**, for example with Chatlog Prune or when loading a long log. RSReforged now hides the standalone roll cards folded into a usage card in one pass per frame, instead of a full pass for every rendered message (thanks [@MatteoZanella](https://github.com/MatteoZanella), [#45](https://github.com/arrowedisgaming/RSReforged/pull/45)).
@@ -388,7 +390,9 @@ The first RSReforged release. Forked from [MangoFVTT/fvtt-ready-set-roll-5e@v3.5
 - **MangoFVTT** — author and maintainer of upstream Ready Set Roll for D&D5e (the direct ancestor of this fork).
 - **RedReign** — author of the original [Better Rolls for 5e](https://github.com/RedReign/FoundryVTT-BetterRolls5e), which RSR is a rewrite of.
 
-[Unreleased]: https://github.com/arrowedisgaming/RSReforged/compare/release-6.0.0...HEAD
+[Unreleased]: https://github.com/arrowedisgaming/RSReforged/compare/release-6.0.2...HEAD
+[6.0.2]: https://github.com/arrowedisgaming/RSReforged/compare/release-6.0.1...release-6.0.2
+[6.0.1]: https://github.com/arrowedisgaming/RSReforged/compare/release-6.0.0...release-6.0.1
 [6.0.0]: https://github.com/arrowedisgaming/RSReforged/compare/release-4.13.4...release-6.0.0
 [4.13.4]: https://github.com/arrowedisgaming/RSReforged/compare/release-4.13.3...release-4.13.4
 [4.13.3]: https://github.com/arrowedisgaming/RSReforged/compare/release-4.13.2...release-4.13.3
