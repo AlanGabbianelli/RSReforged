@@ -431,6 +431,7 @@ const sourceSelector = '.message[data-message-id], .rsr-native-source[data-rsr-m
 export function observeNativeSources(doc = document) {
     if (sourceObservers.has(doc)) return sourceObservers.get(doc);
     const observer = new MutationObserver(records => {
+        for (const record of records) record.addedNodes.forEach(dropEarlierCopies);
         const touchesSources = records.some(record => {
             // Our content clearing must not trigger a hide/restore loop, even when
             // author HTML contains copied source markers. Removing the whole card
@@ -449,6 +450,23 @@ export function observeNativeSources(doc = document) {
     };
     sourceObservers.set(doc, disconnect);
     return disconnect;
+}
+
+/**
+ * Creating the attack of a batch makes dnd5e refresh the batch's damage card before Foundry
+ * has posted it, so Foundry posts that card twice, then updates and deletes only the first.
+ * Drop the earlier copy as the repost lands, before a deletion can reach it, and keep the
+ * repost, which Foundry still measures for its notification. Local-only cards have an empty
+ * ID and are not ours to touch. The sidebar log, its popout, and the notifications each hold
+ * their own copy.
+ */
+function dropEarlierCopies(card) {
+    const log = card.parentElement;
+    const id = card.dataset?.messageId;
+    if (!id || !log?.matches('.chat-log')) return;
+    for (const copy of log.querySelectorAll(`:scope > .message[data-message-id="${id}"]`)) {
+        if (copy !== card) copy.remove();
+    }
 }
 
 let reconcileFrame = null;

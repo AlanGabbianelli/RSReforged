@@ -284,3 +284,82 @@ it("ignores a copied marker for another card, even inside an original that gets 
     expect(isHidden(other)).toBe(false);
     expect(other.querySelector(".message-content").childNodes).toHaveLength(1);
 });
+
+function chatCard(id) {
+    const card = document.createElement("li");
+    card.className = "chat-message message";
+    card.dataset.messageId = id;
+    card.innerHTML = '<header class="message-header"><time class="message-timestamp"></time></header><div class="message-content"></div>';
+    return card;
+}
+
+function chatLog() {
+    const log = document.createElement("ol");
+    log.className = "chat-log";
+    document.body.append(log);
+    return log;
+}
+
+it("drops the earlier copy as soon as Foundry posts a card again, keeping the one it still measures, with no frame, timer or saved message", async () => {
+    const [log, notifications] = [chatLog(), chatLog()];
+    const [first, repost, notification] = [1, 2, 3].map(() => chatCard("damage"));
+    renderer.observeNativeSources(document);
+    log.append(first);
+    notifications.append(notification);
+    await Promise.resolve();
+    // Foundry's timestamp ticks put Text nodes in the same observer batch.
+    first.querySelector(".message-timestamp").textContent = "now";
+    log.append(repost);
+    await Promise.resolve();
+
+    expect(first.isConnected).toBe(false);
+    expect(repost.isConnected).toBe(true);
+    expect(notification.isConnected).toBe(true);
+});
+
+it("keeps the card a scrolled-back page prepends in date order and drops the stray Foundry had appended at the bottom", async () => {
+    const log = chatLog();
+    const [stray, newer, inOrder] = [chatCard("old"), chatCard("newer"), chatCard("old")];
+    renderer.observeNativeSources(document);
+    log.append(newer, stray);
+    await Promise.resolve();
+    log.prepend(inOrder);
+    await Promise.resolve();
+
+    expect(inOrder.isConnected).toBe(true);
+    expect(stray.isConnected).toBe(false);
+});
+
+it("leaves cards with an empty message id alone, so two local-only cards both stay", async () => {
+    const log = chatLog();
+    const [first, second] = [chatCard(""), chatCard("")];
+    renderer.observeNativeSources(document);
+    log.append(first);
+    await Promise.resolve();
+    log.append(second);
+    await Promise.resolve();
+
+    expect(first.isConnected).toBe(true);
+    expect(second.isConnected).toBe(true);
+});
+
+it("dedupes only the cards a chat log holds directly, not a copy quoted in an earlier message or a list outside a log", async () => {
+    const log = chatLog();
+    const quoting = chatCard("quoting");
+    quoting.querySelector(".message-content").innerHTML = '<div class="message" data-message-id="damage"></div>';
+    const list = document.createElement("ol");
+    document.body.append(list);
+    const [damage, listed, relisted] = [1, 2, 3].map(() => chatCard("damage"));
+    renderer.observeNativeSources(document);
+    log.append(quoting);
+    list.append(listed);
+    await Promise.resolve();
+    log.append(damage);
+    list.append(relisted);
+    await Promise.resolve();
+
+    expect(damage.isConnected).toBe(true);
+    expect(quoting.querySelector('[data-message-id="damage"]')).not.toBeNull();
+    expect(listed.isConnected).toBe(true);
+    expect(relisted.isConnected).toBe(true);
+});
